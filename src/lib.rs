@@ -4133,9 +4133,9 @@ mod tests {
 
     #[test]
     fn test_non_boolean_set_operations() {
-        let left_spine = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 1)));
+        let left_spine = BTreeSet::from_iter(0..(DEFAULT_INNER_SIZE + 1));
         let right_spine = BTreeSet::from_iter(
-            ((DEFAULT_INNER_SIZE - 1)..((DEFAULT_INNER_SIZE + 1) * 2)),
+            (DEFAULT_INNER_SIZE - 1)..((DEFAULT_INNER_SIZE + 1) * 2),
         );
 
         let mut union = left_spine.clone();
@@ -4185,10 +4185,10 @@ mod tests {
     fn test_boolean_set_operations() {
         let empty_set: BTreeSet<usize> = BTreeSet::new();
         assert!(empty_set.is_empty());
-        let a = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 1)));
-        let b = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 2)));
+        let a = BTreeSet::from_iter(0..(DEFAULT_INNER_SIZE + 1));
+        let b = BTreeSet::from_iter(0..(DEFAULT_INNER_SIZE + 2));
         let c =
-            BTreeSet::from_iter(((DEFAULT_INNER_SIZE + 2)..(DEFAULT_INNER_SIZE + 4)));
+            BTreeSet::from_iter((DEFAULT_INNER_SIZE + 2)..(DEFAULT_INNER_SIZE + 4));
 
         assert!(a.is_subset(&a));
         assert!(a.is_superset(&a));
@@ -4238,7 +4238,7 @@ mod tests {
 
     #[test]
     fn test_iterating_over_blocks() {
-        let btree = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 10)));
+        let btree = BTreeSet::from_iter(0..(DEFAULT_INNER_SIZE + 10));
         assert_eq!(btree.iter().count(), (0..(DEFAULT_INNER_SIZE + 10)).count());
         assert_eq!(
             btree.range(0..DEFAULT_INNER_SIZE).count(),

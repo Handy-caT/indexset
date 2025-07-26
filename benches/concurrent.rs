@@ -74,7 +74,7 @@ fn concurrent_operations<T: Send + Sync + 'static>(
 fn bench_btreeset_with_ratio(c: &mut Criterion, write_ratio: f64) {
     let operations = Arc::new(generate_operations(write_ratio));
 
-    let mut group = c.benchmark_group(format!("Write Ratio: {:.2}", write_ratio));
+    let mut group = c.benchmark_group(format!("Write Ratio: {write_ratio:.2}"));
     group.warm_up_time(std::time::Duration::from_millis(500));
     group.measurement_time(std::time::Duration::from_millis(500));
 
@@ -94,9 +94,10 @@ fn bench_btreeset_with_ratio(c: &mut Criterion, write_ratio: f64) {
                             black_box(set.contains(&item));
                         },
                         |set, item| {
-                            black_box({
+                            {
                                 let _ = set.insert(item, ());
-                            });
+                            };
+                            black_box(());
                         },
                     );
                 });

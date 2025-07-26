@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn test_iterating_over_blocks() {
-        let btree = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 10)));
+        let btree = BTreeSet::from_iter(0..(DEFAULT_INNER_SIZE + 10));
         assert_eq!(btree.iter().count(), (0..(DEFAULT_INNER_SIZE + 10)).count());
         let start = btree
             .range(0..DEFAULT_INNER_SIZE)

@@ -153,7 +153,7 @@ mod test {
         NodeLike::insert(&mut vec, p3c.clone());
         assert_eq!(vec.len(), 10);
 
-        let start_1 = vec.rank(Included(&MultiPair::with_infimum(1)), true).or(Some(0)).unwrap();
+        let start_1 = vec.rank(Included(&MultiPair::with_infimum(1)), true).unwrap_or(0);
         let end_1 = vec.rank(Excluded(&MultiPair::with_supremum(1)), true).unwrap();
         let range_1 = &vec[start_1..=end_1];
         assert_eq!(range_1.len(), 3);
