@@ -253,8 +253,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 
         self.set
             .put_cdc(new_entry)
-            .0
-            .and_then(|pair| Some(pair.value))
+            .0.map(|pair| pair.value)
     }
     /// Inserts a key-value pair into the map and returns old value (if it was
     /// already in set) with [`ChangeEvent`]'s that describes this insert
@@ -264,7 +263,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 
         let (old_value, cdc) = self.set.put_cdc(new_entry);
 
-        (old_value.and_then(|pair| Some(pair.value)), cdc)
+        (old_value.map(|pair| pair.value), cdc)
     }
     /// Removes a key from the map, returning the key and the value if the key
     /// was previously in the map.
@@ -291,8 +290,7 @@ where K: Debug + Send + Ord + Clone + 'static,
     {
         self
             .set
-            .remove(key)
-            .and_then(|pair| Some((pair.key, pair.value)))
+            .remove(key).map(|pair| (pair.key, pair.value))
     }
     /// Removes a key from the map, returning the key and the value if the key
     /// was previously in the map and [`ChangeEvent`]s describing changes caused
@@ -304,7 +302,7 @@ where K: Debug + Send + Ord + Clone + 'static,
     {
         let (old_value, cdc) = self.set.remove_cdc(key);
 
-        (old_value.and_then(|pair| Some((pair.key, pair.value))), cdc)
+        (old_value.map(|pair| (pair.key, pair.value)), cdc)
     }
     /// Returns the number of elements in the map.
     ///
@@ -572,7 +570,7 @@ mod tests {
         let mut mock_state = PersistedBTreeMap::default();
 
         for i in 0..1024 {
-            let (_, events) = map.insert_cdc(i, format!("val{}", i));
+            let (_, events) = map.insert_cdc(i, format!("val{i}"));
 
             for event in events {
                 mock_state.persist(&event);
@@ -580,9 +578,9 @@ mod tests {
         }
 
         for i in 0..1024 {
-            assert!(mock_state.contains_pair(&i, &format!("val{}", i)));
+            assert!(mock_state.contains_pair(&i, &format!("val{i}")));
             assert!(map.contains_key(&i));
-            assert_eq!(map.get(&i).unwrap().get().value, format!("val{}", i));
+            assert_eq!(map.get(&i).unwrap().get().value, format!("val{i}"));
         }
 
         let expected_state = map
@@ -633,16 +631,16 @@ mod tests {
         let n = crate::core::constants::DEFAULT_INNER_SIZE + 10;
 
         for i in 0..n {
-            let (_, events) = map.insert_cdc(i, format!("val{}", i));
+            let (_, events) = map.insert_cdc(i, format!("val{i}"));
             for event in events {
                 mock_state.persist(&event);
             }
         }
 
         for i in 0..n {
-            assert!(mock_state.contains_pair(&i, &format!("val{}", i)));
+            assert!(mock_state.contains_pair(&i, &format!("val{i}")));
             assert!(map.contains_key(&i));
-            assert_eq!(map.get(&i).unwrap().get().value, format!("val{}", i));
+            assert_eq!(map.get(&i).unwrap().get().value, format!("val{i}"));
         }
 
         assert!(mock_state.nodes.len() > 1);
@@ -703,7 +701,7 @@ mod tests {
             let thread_events = handle.join().unwrap();
             final_events.extend(thread_events)
         }
-        final_events.sort_by(|ev1, ev2| ev1.id().cmp(&ev2.id()));
+        final_events.sort_by_key(|ev1| ev1.id());
         
 
         let mut mock_state = PersistedBTreeMap::default();

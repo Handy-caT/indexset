@@ -138,7 +138,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(raw_entry) = self.inner.next() {
-            return Some((&raw_entry.0, &raw_entry.2));
+            return Some((raw_entry.0, raw_entry.2));
         }
 
         None
@@ -152,7 +152,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(raw_entry) = self.inner.next_back() {
-            return Some((&raw_entry.0, &raw_entry.2));
+            return Some((raw_entry.0, raw_entry.2));
         }
 
         None
@@ -308,8 +308,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 
         self.set
             .put_cdc(new_entry)
-            .0
-            .and_then(|pair| Some(pair.value))
+            .0.map(|pair| pair.value)
     }
     /// Inserts a key-value pair into the map and returns old value (if it was
     /// already in set) with [`ChangeEvent`]'s that describes this insert
@@ -320,7 +319,7 @@ where K: Debug + Send + Ord + Clone + 'static,
 
         let (old_value, cdc) = self.set.put_cdc(new_entry);
 
-        (old_value.and_then(|pair| Some(pair.value)), cdc)
+        (old_value.map(|pair| pair.value), cdc)
     }
     /// Removes some key from the map that matches the given key, returning the
     /// key and the value if the key was previously in the map.
@@ -353,8 +352,7 @@ where K: Debug + Send + Ord + Clone + 'static,
     {
         self
             .set
-            .remove(key)
-            .and_then(|pair| Some((pair.key, pair.value)))
+            .remove(key).map(|pair| (pair.key, pair.value))
     }
     /// Removes some key from the map that matches the given key, returning the
     /// key and the value if the key was previously in the map with
@@ -367,7 +365,7 @@ where K: Debug + Send + Ord + Clone + 'static,
     {
         let (old_value, cdc) = self.set.remove_cdc(key);
 
-        (old_value.and_then(|pair| Some((pair.key, pair.value))), cdc)
+        (old_value.map(|pair| (pair.key, pair.value)), cdc)
     }
     /// Removes a specific key-value pair from the map returning the key and the value if the key
     /// was previously in the map.
@@ -388,11 +386,11 @@ where K: Debug + Send + Ord + Clone + 'static,
     /// ```
     pub fn remove(&self, key: &K, value: &V) -> Option<(K, V)>
     {
-        let discriminant_to_remove = self.raw_get(&key).find(|pair| pair.2 == value);
+        let discriminant_to_remove = self.raw_get(key).find(|pair| pair.2 == value);
         if let Some(discriminant_to_remove) = discriminant_to_remove {
             let pair_to_remove = MultiPair { key: discriminant_to_remove.0.clone(), value: discriminant_to_remove.2.clone(), discriminator: *discriminant_to_remove.1 }; 
 
-            return self.set.remove(&pair_to_remove).and_then(|pair| Some((pair.key, pair.value)));
+            return self.set.remove(&pair_to_remove).map(|pair| (pair.key, pair.value));
         }
 
         None
@@ -403,7 +401,7 @@ where K: Debug + Send + Ord + Clone + 'static,
     #[cfg(feature = "cdc")]
     pub fn remove_cdc(&self, key: &K, value: &V) -> (Option<(K, V)>, Vec<ChangeEvent<MultiPair<K, V>>>)
     {
-        let discriminant_to_remove = self.raw_get(&key).find(|pair| pair.2 == value);
+        let discriminant_to_remove = self.raw_get(key).find(|pair| pair.2 == value);
         if let Some(discriminant_to_remove) = discriminant_to_remove {
             let pair_to_remove = MultiPair { key: discriminant_to_remove.0.clone(), value: discriminant_to_remove.2.clone(), discriminator: *discriminant_to_remove.1 };
 
@@ -703,13 +701,13 @@ mod tests {
         let map = BTreeMultiMap::<String, usize>::with_maximum_node_size(maximum_node_size);
 
         for i in 1..2000 {
-            map.insert(format!("ValueNum{}", i), i);
+            map.insert(format!("ValueNum{i}"), i);
         }
 
         for i in 1..2000 {
-            let range = map.get(&format!("ValueNum{}", i)).collect::<BTreeSet<_>>();
+            let range = map.get(&format!("ValueNum{i}")).collect::<BTreeSet<_>>();
             assert_eq!(range, vec![
-                (&format!("ValueNum{}", i), &i),
+                (&format!("ValueNum{i}"), &i),
             ].into_iter().collect::<BTreeSet<_>>());
         }
     }

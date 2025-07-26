@@ -45,8 +45,8 @@ fn generate_operations(write_ratio: f64) -> Vec<Vec<Op>> {
         let range_end = (thread_idx + 1) * (TOTAL_OPERATIONS / NUM_THREADS);
 
         for _ in 0..OPERATIONS_PER_THREAD {
-            let value = rng.gen_range(range_start..range_end);
-            let operation = if thread_idx < NUM_WRITERS || rng.gen::<f64>() < write_ratio {
+            let value = rng.random_range(range_start..range_end);
+            let operation = if thread_idx < NUM_WRITERS || rng.random::<f64>() < write_ratio {
                 Op::Write(value)
             } else {
                 Op::Read(value)
@@ -111,7 +111,7 @@ fn bench_btreeset_with_ratio(c: &mut Criterion, write_ratio: f64) {
 
     group.bench_function(BenchmarkId::new("ConcurrentBTreeSet", write_ratio), |b| {
         b.iter(|| {
-            let set = Arc::new(indexset::concurrent::set::BTreeSet::new());
+            let set = Arc::new(indexset::concurrent::set::BTreeSet::<_, Vec<_>>::new());
             let mut handles = vec![];
 
             for thread_ops in operations.iter() {

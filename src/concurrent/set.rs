@@ -138,13 +138,11 @@ where T: Debug + Ord + Clone + Send,
             None => {
                 if self.index.back().is_some() {
                     self.put_cdc_if_first_node_exists(value, global_guard)
+                } else if let Some(node_created_cdc) = self.try_to_create_first_node(value.clone(), global_guard) {
+                    (None, node_created_cdc)
                 } else {
-                    if let Some(node_created_cdc) = self.try_to_create_first_node(value.clone(), global_guard) {
-                        (None, node_created_cdc)
-                    } else {
-                        let global_guard = self.index_lock.read().unwrap();
-                        self.put_cdc_if_first_node_exists(value, global_guard)
-                    }
+                    let global_guard = self.index_lock.read().unwrap();
+                    self.put_cdc_if_first_node_exists(value, global_guard)
                 }
             }
         }
@@ -534,7 +532,7 @@ where T: Debug + Ord + Clone + Send,
             let mut cdc = vec![];
             let _global_guard = self.index_lock.read();
             if let Some(target_node_entry) =
-                self.index.lower_bound(std::ops::Bound::Included(&value))
+                self.index.lower_bound(std::ops::Bound::Included(value))
             {
                 let mut node_guard = target_node_entry.value().lock_arc();
                 let old_max = node_guard.max().cloned();
@@ -632,7 +630,7 @@ where T: Debug + Ord + Clone + Send,
         T: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        match self.index.lower_bound(std::ops::Bound::Included(&value)) {
+        match self.index.lower_bound(std::ops::Bound::Included(value)) {
             Some(entry) => Some(entry.value().clone()),
             None => self
                 .index
@@ -810,12 +808,10 @@ where
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.last_front.is_some() || self.last_back.is_some()
-        {
-            if self.last_front.eq(&self.last_back) {
+        if (self.last_front.is_some() || self.last_back.is_some())
+            && self.last_front.eq(&self.last_back) {
                 return None;
             }
-        }
 
         loop {
             if self.current_front_entry_iter.is_none() {
@@ -825,10 +821,10 @@ where
                     if let Some(next_entry_equals_to_next_back_entry) = self
                         .current_back_entry
                         .as_ref()
-                        .and_then(|next_back_entry| { 
+                        .map(|next_back_entry| { 
                             let next_back_entry_key = next_back_entry.key();
 
-                            Some(next_entry_key.eq(next_back_entry_key)) 
+                            next_entry_key.eq(next_back_entry_key) 
                         })
                     {
                         if !next_entry_equals_to_next_back_entry {
@@ -898,8 +894,7 @@ where
                 {
                     if let Some(front_entry_greater_than_next_back_entry) = self
                         .current_front_entry
-                        .as_ref()
-                        .and_then(|front_entry| Some(front_entry.key().ge(next_back_entry.key())))
+                        .as_ref().map(|front_entry| front_entry.key().ge(next_back_entry.key()))
                     {
                         if !front_entry_greater_than_next_back_entry {
                             let guard = next_back_entry.value().lock_arc();
@@ -1018,14 +1013,10 @@ where
             .and_then(|e| e.next().or_else(|| btree.index.back()))
             .or_else(|| btree.index.front());
 
-        if current_back_entry.is_none() {
-            match end_bound {
-                std::ops::Bound::Unbounded => {
-                    current_back_entry = btree.index.back();
-                },
-                _ => {}
+        if current_back_entry.is_none()
+            && end_bound == std::ops::Bound::Unbounded {
+                current_back_entry = btree.index.back();
             }
-        }
 
         let mut last_back = None;
         let (current_back_entry_guard, current_back_entry_iter) =
@@ -1044,16 +1035,13 @@ where
 
                         iter = Some(iter_local);
                         guard = Some(new_guard);
-                    } else {
-                        if let Some(backward_nth) = current_front_entry_guard
-                            .as_ref()
-                            .and_then(|g| Some(g.rank(end_bound, false)))
-                        {
-                            if let Some(backward_nth) = backward_nth {
-                                last_back = current_front_entry_iter.as_mut().and_then(|i| {
-                                    i.nth_back(backward_nth).cloned()
-                                });
-                            }
+                    } else if let Some(backward_nth) = current_front_entry_guard
+                        .as_ref().map(|g| g.rank(end_bound, false))
+                    {
+                        if let Some(backward_nth) = backward_nth {
+                            last_back = current_front_entry_iter.as_mut().and_then(|i| {
+                                i.nth_back(backward_nth).cloned()
+                            });
                         }
                     }
                 }
@@ -1224,16 +1212,13 @@ where
                         }
 
                         guard = Some(new_guard);
-                    } else {
-                        if let Some((len, position)) = potential_front_entry_guard
-                            .as_ref()
-                            .and_then(|g| Some((g.len(), g.rank(end_bound, true))))
-                        {
-                            if let Some(position) = position {
-                                back_position = position;
-                            } else {
-                                back_position = len;
-                            }
+                    } else if let Some((len, position)) = potential_front_entry_guard
+                        .as_ref().map(|g| (g.len(), g.rank(end_bound, true)))
+                    {
+                        if let Some(position) = position {
+                            back_position = position;
+                        } else {
+                            back_position = len;
                         }
                     }
                 }
@@ -1268,8 +1253,6 @@ where
                 // Otherwise we insert it again with a new max
                 let new_max = front_entry_guard.last().unwrap().clone();
                 self.index.insert(new_max, old_entry_value);
-
-                return;
             } else if let Some(mut back_entry_guard) = potential_back_entry_guard {
                 let back_entry = potential_back_entry.unwrap();
                 // Otherwise we remove every single node between them
@@ -1351,7 +1334,7 @@ mod tests {
                 for (operation, value) in thread_data {
                     if operation == 0 {
                         let _a = set_clone.insert(value);
-                        println!("inserted {:?}", value);
+                        println!("inserted {value:?}");
                         expected_values.lock().unwrap().insert(value);
                     }
                 }
@@ -1456,8 +1439,7 @@ mod tests {
             assert_eq!(
                 actual_next,
                 Some(&expected_next),
-                "Tree: {:?}",
-                tree
+                "Tree: {tree:?}"
             );
 
             let expected_next_back = 20 - i;
@@ -1465,8 +1447,7 @@ mod tests {
             assert_eq!(
                 actual_next_back,
                 Some(&expected_next_back),
-                "Tree: {:?}",
-                tree
+                "Tree: {tree:?}"
             );
         }
         assert_eq!(iter.next(), None);
@@ -1499,11 +1480,10 @@ mod tests {
 
     #[test]
     fn test_iterating_over_blocks() {
-        let btree = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 10)).into_iter());
+        let btree = BTreeSet::from_iter((0..(DEFAULT_INNER_SIZE + 10)));
         assert_eq!(btree.iter().count(), (0..(DEFAULT_INNER_SIZE + 10)).count());
         let start = btree
             .range(0..DEFAULT_INNER_SIZE)
-            .into_iter()
             .cloned()
             .collect::<Vec<_>>();
 
@@ -1511,7 +1491,6 @@ mod tests {
         assert_eq!(
             btree
                 .range(0..=DEFAULT_INNER_SIZE)
-                .into_iter()
                 .cloned()
                 .collect::<Vec<_>>(),
             (0..=DEFAULT_INNER_SIZE).collect::<Vec<_>>()
@@ -1642,7 +1621,7 @@ mod tests {
         assert!(set.contains(&5));
         assert!(set.remove(&5).is_some());
         assert!(!set.contains(&5));
-        assert!(!set.remove(&5).is_some());
+        assert!(set.remove(&5).is_none());
     }
 
     #[test]
@@ -1662,7 +1641,7 @@ mod tests {
     fn test_remove_non_existent() {
         let set = BTreeSet::<i32>::new();
         set.insert(5);
-        assert!(!set.remove(&10).is_some());
+        assert!(set.remove(&10).is_none());
         assert!(set.contains(&5));
     }
     #[test]
@@ -1687,7 +1666,7 @@ mod tests {
                 thread::spawn(move || {
                     for i in (t * elements_per_thread)..((t + 1) * elements_per_thread) {
                         if i % 2 == 1 {
-                            assert!(set.remove(&i).is_some(), "Failed to remove {}", i);
+                            assert!(set.remove(&i).is_some(), "Failed to remove {i}");
                         }
                     }
                 })
@@ -1706,12 +1685,11 @@ mod tests {
 
         for i in 0..NUM_ELEMENTS {
             if i % 2 == 0 {
-                assert!(set.contains(&i), "Even number {} should be in the set", i);
+                assert!(set.contains(&i), "Even number {i} should be in the set");
             } else {
                 assert!(
                     !set.contains(&i),
-                    "Odd number {} should not be in the set",
-                    i
+                    "Odd number {i} should not be in the set"
                 );
             }
         }
@@ -1727,13 +1705,13 @@ mod tests {
         }
 
         for i in 0..n {
-            assert!(set.remove(&i).is_some(), "Failed to remove {}", i);
+            assert!(set.remove(&i).is_some(), "Failed to remove {i}");
         }
 
         assert_eq!(set.len(), 0, "Set should be empty");
 
         for i in 0..n {
-            assert!(!set.contains(&i), "Element {} should not be in the set", i);
+            assert!(!set.contains(&i), "Element {i} should not be in the set");
         }
     }
 
