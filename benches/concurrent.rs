@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use crossbeam_skiplist::SkipSet;
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use scc::TreeIndex;
 use std::sync::Arc;
 use std::thread;
@@ -37,7 +37,7 @@ const TOTAL_OPERATIONS: usize = NUM_THREADS * OPERATIONS_PER_THREAD;
 // }
 
 fn generate_operations(write_ratio: f64) -> Vec<Vec<Op>> {
-    let mut rng = thread_rng();
+    let mut rng = rng();
     let mut all_operations = vec![Vec::with_capacity(OPERATIONS_PER_THREAD); NUM_THREADS];
 
     for thread_idx in 0..NUM_THREADS {
