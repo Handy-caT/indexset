@@ -1325,10 +1325,9 @@ mod tests {
 
         let expected_values = Arc::new(Mutex::new(HashSet::new()));
 
-        for thread_idx in 0..num_threads {
+        for thread_data in test_data.iter().cloned() {
             let set_clone = Arc::clone(&set);
             let expected_values = Arc::clone(&expected_values);
-            let thread_data = test_data[thread_idx].clone();
 
             let handle = thread::spawn(move || {
                 for (operation, value) in thread_data {
@@ -1603,7 +1602,6 @@ mod tests {
 
         // This range exceeds the size of the tree
         btree.remove_range(DEFAULT_INNER_SIZE * 3..DEFAULT_INNER_SIZE * 4);
-        let expected_len = expected_len;
         let actual_len = btree.len();
         assert_eq!(expected_len, actual_len);
 

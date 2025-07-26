@@ -677,10 +677,9 @@ mod tests {
 
         let expected_values = Arc::new(Mutex::new(HashMap::new()));
 
-        for thread_idx in 0..num_threads {
+        for thread_data in 0test_data.iter().cloned() {
             let map_clone = Arc::clone(&map);
             let expected_values = Arc::clone(&expected_values);
-            let thread_data = test_data[thread_idx].clone();
 
             let handle = thread::spawn(move || {
                 let mut events = Vec::new();
