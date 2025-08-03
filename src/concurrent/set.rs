@@ -186,7 +186,12 @@ where T: Debug + Ord + Clone + Send,
         let node_guard = target_node_entry.value().lock_arc();
         let global_guard = self.index_lock.read().unwrap();
         if !node_guard.need_to_split(self.node_capacity) {
-            self.insert_into_node(value, target_node_entry, node_guard, global_guard)
+            if target_node_entry.is_removed() {
+                drop(node_guard);
+                self.put_cdc_if_first_node_exists(value, global_guard)
+            } else {
+                self.insert_into_node(value, target_node_entry, node_guard, global_guard)
+            }
         } else {
             drop(global_guard);
             let global_guard = self.index_lock.write().unwrap();
@@ -217,10 +222,9 @@ where T: Debug + Ord + Clone + Send,
                 return (None, cdc);
             }
             // else we need to update max in index
-            drop(node_guard);
             drop(global_guard);
             
-            self.try_to_update_node_max(old_max.unwrap(), node_entry);
+            self.try_to_update_node_max(node_entry, node_guard);
             (None, cdc)
         } else {
             #[cfg(feature = "cdc")]
@@ -251,11 +255,15 @@ where T: Debug + Ord + Clone + Send,
             (NodeLike::replace(&mut *node_guard, idx, value.clone()), cdc)
         }
     }
-    fn try_to_update_node_max(&self, old_max: T, node: Entry<T, Arc<Mutex<Node>>>) {
-        let node_guard = node.value().lock_arc();
+    fn try_to_update_node_max(&self, node: Entry<T, Arc<Mutex<Node>>>, node_guard: ArcMutexGuard<RawMutex, Node>) {
         let _global_guard = self.index_lock.write().unwrap();
         let new_max = node_guard.max().unwrap();
-        if self.index.remove(&old_max).is_some() {
+        let res = node.remove();
+        if res {
+            self.index.insert(new_max.clone(), node.value().clone());
+        } else {
+            let entry = self.index.lower_bound(std::ops::Bound::Included(node_guard.min().expect("node should be non empty for split action"))).expect("should be available as ...");
+            entry.remove();
             self.index.insert(new_max.clone(), node.value().clone());
         }
     }
@@ -263,7 +271,12 @@ where T: Debug + Ord + Clone + Send,
         let node_max = node_guard.max().expect("node should be non empty for split action").clone();
         let mut cdc = vec![];
         let old_node = node_entry.value().clone();
-        node_entry.remove();
+        let res = node_entry.remove();
+        if !res {
+            // in this case max update was processed.
+            let entry = self.index.lower_bound(std::ops::Bound::Included(node_guard.min().expect("node should be non empty for split action"))).expect("should be available as ...");
+            entry.remove();
+        }
         let mut new_vec = node_guard.halve();
         #[cfg(feature = "cdc")]
         {
@@ -1347,8 +1360,7 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
-
-        println!("Node count {:?}", set.node_count());
+        
         let expected_values = expected_values.lock().unwrap();
         assert_eq!(set.len(), expected_values.len());
 
