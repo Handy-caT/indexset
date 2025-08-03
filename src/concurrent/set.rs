@@ -5,7 +5,7 @@ use std::{borrow::Borrow, sync::Arc};
 use std::marker::PhantomData;
 #[cfg(feature = "cdc")]
 use std::sync::atomic::{AtomicU64, Ordering};
-
+use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use crossbeam_utils::sync::{ShardedLock, ShardedLockReadGuard, ShardedLockWriteGuard};
 use parking_lot::{ArcMutexGuard, Mutex, RawMutex};
@@ -149,7 +149,7 @@ where T: Debug + Ord + Clone + Send,
             }
         }
     }
-    fn try_to_create_first_node<'a>(&'a self, value: T, mut global_guard: ShardedLockReadGuard<'a, ()>) -> Option<Vec<ChangeEvent<T>>> {
+    fn try_to_create_first_node<'a>(&'a self, value: T, global_guard: ShardedLockReadGuard<'a, ()>) -> Option<Vec<ChangeEvent<T>>> {
         let mut first_node = Node::with_capacity(self.node_capacity);
         first_node.insert(value.clone());
         let first_node = Arc::new(Mutex::new(first_node));
@@ -164,19 +164,15 @@ where T: Debug + Ord + Clone + Send,
             };
             cdc.push(node_insertion);
         }
-        loop {
-            global_guard = self.index_lock.read().unwrap();
-            match self.index.lower_bound(std::ops::Bound::Included(&value)) {
-                Some(_) => {
-                    return None
-                }
-                None => {
-                    drop(global_guard);
-                    if let Ok(_) = self.index_lock.try_write() {
-                        self.index.insert(value, first_node);
-                        return Some(cdc)
-                    }
-                }
+        drop(global_guard);
+        let _global_guard = self.index_lock.write().unwrap();
+        match self.index.back() {
+            Some(_) => {
+                None
+            }
+            None => {
+                self.index.insert(value, first_node);
+                Some(cdc)
             }
         }
     }
@@ -190,14 +186,14 @@ where T: Debug + Ord + Clone + Send,
         let node_guard = target_node_entry.value().lock_arc();
         let global_guard = self.index_lock.read().unwrap();
         if !node_guard.need_to_split(self.node_capacity) {
-            self.insert_into_node(value, node_guard, global_guard)
+            self.insert_into_node(value, target_node_entry, node_guard, global_guard)
         } else {
             drop(global_guard);
             let global_guard = self.index_lock.write().unwrap();
-            self.split_node(value, node_guard, global_guard)
+            self.split_node(value, target_node_entry, node_guard, global_guard)
         }
     }
-    fn insert_into_node(&self, value: T, mut node_guard: ArcMutexGuard<RawMutex, Node>, global_guard: ShardedLockReadGuard<()>) -> (Option<T>, Vec<ChangeEvent<T>>) {
+    fn insert_into_node(&self, value: T, node_entry: Entry<T, Arc<Mutex<Node>>>, mut node_guard: ArcMutexGuard<RawMutex, Node>, global_guard: ShardedLockReadGuard<()>) -> (Option<T>, Vec<ChangeEvent<T>>) {
         let mut cdc = vec![];
         let old_max = node_guard.max().cloned();
         let (inserted, idx) = NodeLike::insert(&mut *node_guard, value.clone());
@@ -224,7 +220,7 @@ where T: Debug + Ord + Clone + Send,
             drop(node_guard);
             drop(global_guard);
             
-            self.try_to_update_node_max(old_max.unwrap());
+            self.try_to_update_node_max(old_max.unwrap(), node_entry);
             (None, cdc)
         } else {
             #[cfg(feature = "cdc")]
@@ -255,28 +251,19 @@ where T: Debug + Ord + Clone + Send,
             (NodeLike::replace(&mut *node_guard, idx, value.clone()), cdc)
         }
     }
-    fn try_to_update_node_max(&self, old_max: T) {
-        if let Some(entry) = self.index.get(&old_max) {
-            let node = entry.value().clone();
-            let node_guard = node.lock_arc();
-            let _global_guard = self.index_lock.write().unwrap();
-            let new_max = node_guard.max().unwrap();
-            match new_max.cmp(&old_max) {
-                std::cmp::Ordering::Equal => {},
-                std::cmp::Ordering::Greater | std::cmp::Ordering::Less => {
-                    self.index.remove(&old_max);
-                    self.index.insert(new_max.clone(), node);
-                }
-            }
+    fn try_to_update_node_max(&self, old_max: T, node: Entry<T, Arc<Mutex<Node>>>) {
+        let node_guard = node.value().lock_arc();
+        let _global_guard = self.index_lock.write().unwrap();
+        let new_max = node_guard.max().unwrap();
+        if self.index.remove(&old_max).is_some() {
+            self.index.insert(new_max.clone(), node.value().clone());
         }
-        // else node's max was updated by the other thread
     }
-    fn split_node(&self, value: T, mut node_guard: ArcMutexGuard<RawMutex, Node>, _global_guard: ShardedLockWriteGuard<()>) -> (Option<T>, Vec<ChangeEvent<T>>) {
+    fn split_node(&self, value: T, node_entry: Entry<T, Arc<Mutex<Node>>>, mut node_guard: ArcMutexGuard<RawMutex, Node>, _global_guard: ShardedLockWriteGuard<()>) -> (Option<T>, Vec<ChangeEvent<T>>) {
         let node_max = node_guard.max().expect("node should be non empty for split action").clone();
-        let entry = self.index.get(&node_max).expect("should be available as node was locked");
         let mut cdc = vec![];
-        let old_node = entry.value().clone();
-        entry.remove();
+        let old_node = node_entry.value().clone();
+        node_entry.remove();
         let mut new_vec = node_guard.halve();
         #[cfg(feature = "cdc")]
         {
@@ -287,12 +274,10 @@ where T: Debug + Ord + Clone + Send,
             };
             cdc.push(node_split);
         }
-        let mut insert_attempted = false;
         let max_value = node_guard.max().expect("node should be non-empty").clone();
         if max_value > value {
             let (inserted, idx) = NodeLike::insert(&mut *node_guard, value.clone());
             let mut old_value = None;
-            insert_attempted = true;
             if !inserted {
                 old_value = NodeLike::replace(&mut *node_guard, idx, value.clone());
                 #[cfg(feature = "cdc")]
@@ -1351,7 +1336,7 @@ mod tests {
                 for (operation, value) in thread_data {
                     if operation == 0 {
                         let _a = set_clone.insert(value);
-                        println!("inserted {:?}", value);
+                        //println!("inserted {:?}", value);
                         expected_values.lock().unwrap().insert(value);
                     }
                 }
