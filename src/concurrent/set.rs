@@ -361,140 +361,6 @@ where T: Debug + Ord + Clone + Send,
             (old_value, cdc)
         }
     }
-    pub(crate) fn put_cdc_1(&self, value: T) -> (Option<T>, Vec<ChangeEvent<T>>) {
-        loop {
-            let mut cdc = vec![];
-            let _global_guard = self.index_lock.read();
-            let target_node_entry = match self.index.lower_bound(std::ops::Bound::Included(&value))
-            {
-                Some(entry) => entry,
-                None => {
-                    if let Some(last) = self.index.back() {
-                        last
-                    } else {
-                        let mut first_node = Node::with_capacity(self.node_capacity);
-
-                        first_node.insert(value.clone());
-
-                        let first_node = Arc::new(Mutex::new(first_node));
-
-                        drop(_global_guard);
-                        if let Ok(_) = self.index_lock.try_write() {
-                            #[cfg(feature = "cdc")]
-                            {
-                                let node_insertion = ChangeEvent::CreateNode {
-                                    // is correct as index is locked and current thread is the only that can 
-                                    // fetch event_id.
-                                    event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                                    max_value: value.clone(),
-                                };
-                                cdc.push(node_insertion);
-                            }
-
-                            self.index.insert(value, first_node);
-
-                            return (None, cdc);
-                        }
-
-                        continue;
-                    }
-                }
-            };
-            
-            let mut node_guard = target_node_entry.value().lock_arc();
-            
-            let mut operation = None;
-            #[cfg(feature = "cdc")]
-            let mut operation_id = 0.into();
-            if !node_guard.need_to_split(self.node_capacity) {
-                let old_max = node_guard.max().cloned();
-                let (inserted, idx) = NodeLike::insert(&mut *node_guard, value.clone());
-                if inserted {
-                    #[cfg(feature = "cdc")]
-                    {
-                        let node_element_insertion = ChangeEvent::InsertAt {
-                            // is correct as node is locked and current thread is the only that can 
-                            // fetch event_id, so events for this node will have monotonic id's.
-                            event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                            max_value: old_max
-                                .clone()
-                                .expect("Max value should exist as Node is not empty"),
-                            value: value.clone(),
-                            index: idx,
-                        };
-                        cdc.push(node_element_insertion);
-                    }
-                    
-                    if node_guard.max().cloned() == old_max {
-                        return (None, cdc);
-                    }
-
-                    if old_max.is_some() {
-                        operation = Some(Operation::UpdateMax(
-                            target_node_entry.value().clone(),
-                            old_max.unwrap(),
-                        ))
-                    }
-                } else {
-                    #[cfg(feature = "cdc")]
-                    {
-                        let node_element_removal = ChangeEvent::RemoveAt {
-                            // is correct as node is locked and current thread is the only that can 
-                            // fetch event_id, so events for this node will have monotonic id's.
-                            event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                            max_value: old_max
-                                .clone()
-                                .expect("Max value should exist as Node is not empty"),
-                            value: value.clone(),
-                            index: idx,
-                        };
-                        let node_element_insertion = ChangeEvent::InsertAt {
-                            // same as for previos.
-                            event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                            max_value: old_max
-                                .clone()
-                                .expect("Max value should exist as Node is not empty"),
-                            value: value.clone(),
-                            index: idx,
-                        };
-                        cdc.push(node_element_removal);
-                        cdc.push(node_element_insertion);
-                    }
-
-                    return (NodeLike::replace(&mut *node_guard, idx, value.clone()), cdc);
-                }
-            } else {
-                operation = Some(Operation::Split(
-                    target_node_entry.value().clone(),
-                    target_node_entry.key().clone(),
-                    value.clone(),
-                ));
-                #[cfg(feature = "cdc")]
-                {
-                    operation_id = self.event_id.fetch_add(1, Ordering::Relaxed).into();
-                }
-            }
-            
-
-            drop(node_guard);
-            drop(_global_guard);
-            
-            let _global_guard = self.index_lock.write();
-
-            return if let Ok((value, value_cdc)) = 
-                operation.unwrap().commit(
-                    &self.index, 
-                    #[cfg(feature = "cdc")]
-                    operation_id
-                )
-            {
-                cdc.extend(value_cdc);
-                (value, cdc)
-            } else {
-                (None, cdc)
-            }
-        }
-    }
 
     /// Adds a value to the set.
     ///
@@ -526,8 +392,34 @@ where T: Debug + Ord + Clone + Send,
     pub fn remove_cdc<Q>(&self, value: &Q) -> (Option<T>, Vec<ChangeEvent<T>>)
     where
         T: Borrow<Q>,
-        Q: Ord + ?Sized,
+        Q: Ord + PartialEq + ?Sized,
     {
+        let mut cdc = vec![];
+        let global_guard = self.index_lock.read();
+        let target_node_entry = if let Some(target_node_entry) =
+            self.index.lower_bound(std::ops::Bound::Included(&value))
+        {
+            target_node_entry
+        } else {
+            if let Some(entry) = self.index.back() {
+                entry
+            } else {
+                return (None, cdc);
+            }
+        };
+
+        let mut node_guard = target_node_entry.value().lock_arc();
+        let old_max = node_guard.max().cloned().expect("Node should not be empty");
+        if value == old_max.borrow() {
+            let deleted = NodeLike::delete(&mut *node_guard, value);
+            if deleted.is_none() {
+                return (None, cdc);
+            }
+            let (deleted, idx) = deleted.expect("should be ok as checked before");
+        } else {
+            
+        }
+        
         loop {
             let mut cdc = vec![];
             let _global_guard = self.index_lock.read();
