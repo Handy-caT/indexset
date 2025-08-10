@@ -1,18 +1,18 @@
-use std::fmt::Debug;
-use std::iter::FusedIterator;
-use std::ops::RangeBounds;
-use std::{borrow::Borrow, sync::Arc};
-use std::marker::PhantomData;
-#[cfg(feature = "cdc")]
-use std::sync::atomic::{AtomicU64, Ordering};
 use crossbeam_skiplist::SkipMap;
 use crossbeam_utils::sync::ShardedLock;
 use parking_lot::{ArcMutexGuard, Mutex, RawMutex};
+use std::fmt::Debug;
+use std::iter::FusedIterator;
+use std::marker::PhantomData;
+use std::ops::RangeBounds;
+#[cfg(feature = "cdc")]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{borrow::Borrow, sync::Arc};
 
 use crate::cdc::change::ChangeEvent;
+use crate::concurrent::operation::*;
 use crate::core::constants::DEFAULT_INNER_SIZE;
 use crate::core::node::*;
-use crate::concurrent::operation::*;
 
 use super::r#ref::Ref;
 
@@ -75,7 +75,7 @@ use super::r#ref::Ref;
 pub struct BTreeSet<T, Node = Vec<T>>
 where
     T: Ord + Clone + 'static,
-    Node: NodeLike<T>
+    Node: NodeLike<T>,
 {
     pub(crate) index: SkipMap<T, Arc<Mutex<Node>>>,
     index_lock: ShardedLock<()>,
@@ -98,8 +98,9 @@ impl<T: Ord + Clone + 'static, Node: NodeLike<T>> Default for BTreeSet<T, Node> 
 }
 
 impl<T, Node> BTreeSet<T, Node>
-where T: Debug + Ord + Clone + Send,
-      Node: NodeLike<T> + Send + 'static
+where
+    T: Debug + Ord + Clone + Send,
+    Node: NodeLike<T> + Send + 'static,
 {
     pub fn new() -> Self {
         Self::default()
@@ -123,12 +124,18 @@ where T: Debug + Ord + Clone + Send,
         }
     }
     pub fn attach_node(&self, node: Node) {
-        let node_id = node.max().cloned().expect("node should contain at least one value to be correct node");
+        let node_id = node
+            .max()
+            .cloned()
+            .expect("node should contain at least one value to be correct node");
         let _global_guard = self.index_lock.write();
         self.index.insert(node_id, Arc::new(Mutex::new(node)));
     }
-    
-    pub(crate) fn put_cdc_checked(&self, value: T) -> Result<(Option<T>, Vec<ChangeEvent<T>>), (ArcMutexGuard<RawMutex, Node>, usize, T)> {
+
+    pub(crate) fn put_cdc_checked(
+        &self,
+        value: T,
+    ) -> Result<(Option<T>, Vec<ChangeEvent<T>>), (ArcMutexGuard<RawMutex, Node>, usize, T)> {
         loop {
             let mut cdc = vec![];
             let _global_guard = self.index_lock.read();
@@ -150,7 +157,7 @@ where T: Debug + Ord + Clone + Send,
                             #[cfg(feature = "cdc")]
                             {
                                 let node_insertion = ChangeEvent::CreateNode {
-                                    // is correct as index is locked and current thread is the only that can 
+                                    // is correct as index is locked and current thread is the only that can
                                     // fetch event_id.
                                     event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
                                     max_value: value.clone(),
@@ -180,7 +187,7 @@ where T: Debug + Ord + Clone + Send,
                     #[cfg(feature = "cdc")]
                     {
                         let node_element_insertion = ChangeEvent::InsertAt {
-                            // is correct as node is locked and current thread is the only that can 
+                            // is correct as node is locked and current thread is the only that can
                             // fetch event_id, so events for this node will have monotonic id's.
                             event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
                             max_value: old_max
@@ -217,7 +224,6 @@ where T: Debug + Ord + Clone + Send,
                 }
             }
 
-
             drop(node_guard);
             drop(_global_guard);
 
@@ -226,58 +232,52 @@ where T: Debug + Ord + Clone + Send,
             let op = operation.unwrap();
             match &op {
                 Operation::Split(_, _, _) => {
-                    if let Ok((value, value_cdc)) =
-                        op.commit(
-                            &self.index,
-                            #[cfg(feature = "cdc")]
-                            operation_id
-                        )
-                    {
+                    if let Ok((value, value_cdc)) = op.commit(
+                        &self.index,
+                        #[cfg(feature = "cdc")]
+                        operation_id,
+                    ) {
                         cdc.extend(value_cdc);
-                        return Ok((value, cdc))
+                        return Ok((value, cdc));
                     } else {
-                        continue
+                        continue;
                     }
                 }
                 Operation::UpdateMax(_, _) => {
-                    return if let Ok((value, value_cdc)) =
-                        op.commit(
-                            &self.index,
-                            #[cfg(feature = "cdc")]
-                            operation_id
-                        )
-                    {
+                    return if let Ok((value, value_cdc)) = op.commit(
+                        &self.index,
+                        #[cfg(feature = "cdc")]
+                        operation_id,
+                    ) {
                         cdc.extend(value_cdc);
                         Ok((value, cdc))
                     } else {
                         Ok((None, cdc))
                     }
                 }
-                Operation::MakeUnreachable(_, _) => unreachable!()
+                Operation::MakeUnreachable(_, _) => unreachable!(),
             }
         }
     }
-    pub(crate) fn put_cdc(&self, value: T) -> (Option<T>, Vec<ChangeEvent<T>>) { 
-        match self.put_cdc_checked(value.clone()) { 
+    pub(crate) fn put_cdc(&self, value: T) -> (Option<T>, Vec<ChangeEvent<T>>) {
+        match self.put_cdc_checked(value.clone()) {
             Ok(res) => res,
             Err((mut node_guard, idx, old_max)) => {
                 let mut cdc = vec![];
                 #[cfg(feature = "cdc")]
                 {
                     let node_element_removal = ChangeEvent::RemoveAt {
-                        // is correct as node is locked and current thread is the only that can 
+                        // is correct as node is locked and current thread is the only that can
                         // fetch event_id, so events for this node will have monotonic id's.
                         event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                        max_value: old_max
-                            .clone(),
+                        max_value: old_max.clone(),
                         value: value.clone(),
                         index: idx,
                     };
                     let node_element_insertion = ChangeEvent::InsertAt {
                         // same as for previos.
                         event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
-                        max_value: old_max
-                            .clone(),
+                        max_value: old_max.clone(),
                         value: value.clone(),
                         index: idx,
                     };
@@ -340,7 +340,7 @@ where T: Debug + Ord + Clone + Send,
                     #[cfg(feature = "cdc")]
                     {
                         let node_element_removal = ChangeEvent::RemoveAt {
-                            // is correct as node is locked and current thread is the only that can 
+                            // is correct as node is locked and current thread is the only that can
                             // fetch event_id, so events for this node will have monotonic id's.
                             event_id: self.event_id.fetch_add(1, Ordering::Relaxed).into(),
                             max_value: old_max
@@ -375,18 +375,16 @@ where T: Debug + Ord + Clone + Send,
 
                 let _global_guard = self.index_lock.write();
 
-                return if let Ok((_, value_cdc)) =
-                    operation.unwrap().commit(
-                        &self.index,
-                        #[cfg(feature = "cdc")]
-                        operation_id
-                    )
-                {
+                return if let Ok((_, value_cdc)) = operation.unwrap().commit(
+                    &self.index,
+                    #[cfg(feature = "cdc")]
+                    operation_id,
+                ) {
                     cdc.extend(value_cdc);
                     (Some(deleted), cdc)
                 } else {
                     (Some(deleted), cdc)
-                }
+                };
             }
 
             break;
@@ -418,6 +416,66 @@ where T: Debug + Ord + Clone + Send,
         Q: Ord + ?Sized,
     {
         self.remove_cdc(value).0
+    }
+    /// Removes last value from the set and drops it. Returns whether such an
+    /// element was present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wt_indexset::concurrent::set::BTreeSet;
+    ///
+    /// let mut set = BTreeSet::<usize>::new();
+    ///
+    /// set.insert(2);
+    /// set.insert(7);
+    /// set.insert(999);
+    /// assert_eq!(set.remove_max(), Some(999));
+    /// assert_eq!(set.remove_max(), Some(7));
+    /// assert_eq!(set.remove_max(), Some(2));
+    /// assert!(set.remove_max().is_none());
+    /// ```
+    pub fn remove_max(&self) -> Option<T> {
+        loop {
+            let _global_guard = self.index_lock.read();
+            if let Some(target_node_entry) = self.index.back() {
+                let mut node_guard = target_node_entry.value().lock_arc();
+                let Some(max) = node_guard.max().cloned() else {
+                    return None;
+                };
+                let (deleted, idx) = NodeLike::delete(&mut *node_guard, &max).expect(
+                    "Max value should exist as it can't be removed while `node_guard` is alive",
+                );
+                let operation = if node_guard.len() > 0 {
+                    Operation::UpdateMax(target_node_entry.value().clone(), max)
+                } else {
+                    Operation::MakeUnreachable(target_node_entry.value().clone(), max)
+                };
+
+                #[cfg(feature = "cdc")]
+                let operation_id = self.event_id.fetch_add(1, Ordering::Relaxed).into();
+
+                drop(node_guard);
+                drop(_global_guard);
+
+                let _global_guard = self.index_lock.write();
+                if let Ok(_) = operation.commit(
+                    &self.index,
+                    #[cfg(feature = "cdc")]
+                    operation_id,
+                ) {
+                    return Some(deleted);
+                }
+
+                drop(_global_guard);
+
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        None
     }
     fn locate_node<Q>(&self, value: &Q) -> Option<Arc<Mutex<Node>>>
     where
@@ -473,7 +531,7 @@ where T: Debug + Ord + Clone + Send,
                 return Some(Ref {
                     node_guard,
                     position,
-                    phantom_data: PhantomData
+                    phantom_data: PhantomData,
                 });
             }
         }
@@ -532,7 +590,7 @@ where
 pub struct Iter<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     _btree: &'a BTreeSet<T, Node>,
     current_front_entry: Option<crossbeam_skiplist::map::Entry<'a, T, Arc<Mutex<Node>>>>,
@@ -548,7 +606,7 @@ where
 impl<'a, T, Node> Iter<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     pub fn new(btree: &'a BTreeSet<T, Node>) -> Self {
         let current_front_entry = btree.index.front();
@@ -598,13 +656,12 @@ where
 impl<'a, T, Node> Iterator for Iter<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.last_front.is_some() || self.last_back.is_some()
-        {
+        if self.last_front.is_some() || self.last_back.is_some() {
             if self.last_front.eq(&self.last_back) {
                 return None;
             }
@@ -676,7 +733,7 @@ where
 impl<'a, T, Node> DoubleEndedIterator for Iter<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if (self.last_front.is_some() || self.last_back.is_some())
@@ -746,12 +803,15 @@ where
     }
 }
 
-impl<'a, T: Debug + Ord + Clone + Send, Node: NodeLike<T> + Send + 'static> FusedIterator for Iter<'a, T, Node> {}
+impl<'a, T: Debug + Ord + Clone + Send, Node: NodeLike<T> + Send + 'static> FusedIterator
+    for Iter<'a, T, Node>
+{
+}
 
 impl<'a, T, Node> IntoIterator for &'a BTreeSet<T, Node>
 where
     T: Debug + Ord + Send + Clone,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     type Item = &'a T;
 
@@ -765,7 +825,7 @@ where
 pub struct Range<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     iter: Iter<'a, T, Node>,
 }
@@ -773,7 +833,7 @@ where
 impl<'a, T, Node> Range<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     pub fn new<Q, R>(btree: &'a BTreeSet<T, Node>, range: R) -> Self
     where
@@ -784,9 +844,7 @@ where
         let _global_guard = btree.index_lock.read();
 
         let start_bound = range.start_bound();
-        let current_front_entry = btree
-            .index
-            .lower_bound(start_bound);
+        let current_front_entry = btree.index.lower_bound(start_bound);
 
         let mut last_front = None;
         let (current_front_entry_guard, mut current_front_entry_iter) = if let Some(current_entry) =
@@ -815,7 +873,7 @@ where
             match end_bound {
                 std::ops::Bound::Unbounded => {
                     current_back_entry = btree.index.back();
-                },
+                }
                 _ => {}
             }
         }
@@ -829,7 +887,8 @@ where
                 if let Some(front_entry) = current_front_entry.as_ref() {
                     if !Arc::ptr_eq(current_entry.value(), front_entry.value()) {
                         let new_guard = current_entry.value().lock_arc();
-                        let mut iter_local: std::slice::Iter<'_, T> = unsafe { std::mem::transmute(new_guard.iter()) };
+                        let mut iter_local: std::slice::Iter<'_, T> =
+                            unsafe { std::mem::transmute(new_guard.iter()) };
                         let backward_nth = new_guard.rank(end_bound, false);
                         if let Some(backward_nth) = backward_nth {
                             last_back = iter_local.nth_back(backward_nth).cloned();
@@ -843,9 +902,9 @@ where
                             .and_then(|g| Some(g.rank(end_bound, false)))
                         {
                             if let Some(backward_nth) = backward_nth {
-                                last_back = current_front_entry_iter.as_mut().and_then(|i| {
-                                    i.nth_back(backward_nth).cloned()
-                                });
+                                last_back = current_front_entry_iter
+                                    .as_mut()
+                                    .and_then(|i| i.nth_back(backward_nth).cloned());
                             }
                         }
                     }
@@ -855,7 +914,6 @@ where
             } else {
                 (None, None)
             };
-
 
         Self {
             iter: Iter {
@@ -876,7 +934,7 @@ where
 impl<'a, T, Node> Iterator for Range<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     type Item = &'a T;
 
@@ -888,19 +946,24 @@ where
 impl<'a, T, Node> DoubleEndedIterator for Range<'a, T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter.next_back()
     }
 }
 
-impl<'a, T, Node> FusedIterator for Range<'a, T, Node> where T: Debug + Ord + Clone + Send + 'static, Node: NodeLike<T> + Send + 'static {}
+impl<'a, T, Node> FusedIterator for Range<'a, T, Node>
+where
+    T: Debug + Ord + Clone + Send + 'static,
+    Node: NodeLike<T> + Send + 'static,
+{
+}
 
 impl<'a, T, Node> BTreeSet<T, Node>
 where
     T: Debug + Ord + Clone + Send + 'static,
-    Node: NodeLike<T> + Send + 'static
+    Node: NodeLike<T> + Send + 'static,
 {
     /// Gets an iterator that visits the elements in the `BTreeSet` in ascending
     /// order.
@@ -1242,12 +1305,7 @@ mod tests {
 
             let expected_next = i + 1;
             let actual_next = iter.next();
-            assert_eq!(
-                actual_next,
-                Some(&expected_next),
-                "Tree: {:?}",
-                tree
-            );
+            assert_eq!(actual_next, Some(&expected_next), "Tree: {:?}", tree);
 
             let expected_next_back = 20 - i;
             let actual_next_back = iter.next_back();
@@ -1554,7 +1612,10 @@ mod tests {
         assert_eq!(set.range(5..=8).collect::<Vec<_>>(), vec![&5, &6, &7, &8]);
         assert_eq!(set.range(5..8).collect::<Vec<_>>(), vec![&5, &6, &7]);
 
-        assert_eq!(set.range(10..=13).collect::<Vec<_>>(), vec![&10, &11, &12, &13]);
+        assert_eq!(
+            set.range(10..=13).collect::<Vec<_>>(),
+            vec![&10, &11, &12, &13]
+        );
         assert_eq!(set.range(10..13).collect::<Vec<_>>(), vec![&10, &11, &12]);
 
         // Last value of the node
@@ -1578,20 +1639,41 @@ mod tests {
         assert_eq!(set.range(2..5).collect::<Vec<_>>(), vec![&2, &3, &4]);
 
         // Full node
-        assert_eq!(set.range(0..=4).collect::<Vec<_>>(), vec![&0, &1, &2, &3, &4]);
-        assert_eq!(set.range(0..5).collect::<Vec<_>>(), vec![&0, &1, &2, &3, &4]);
+        assert_eq!(
+            set.range(0..=4).collect::<Vec<_>>(),
+            vec![&0, &1, &2, &3, &4]
+        );
+        assert_eq!(
+            set.range(0..5).collect::<Vec<_>>(),
+            vec![&0, &1, &2, &3, &4]
+        );
 
-        assert_eq!(set.range(5..=9).collect::<Vec<_>>(), vec![&5, &6, &7, &8, &9]);
-        assert_eq!(set.range(5..10).collect::<Vec<_>>(), vec![&5, &6, &7, &8, &9]);
+        assert_eq!(
+            set.range(5..=9).collect::<Vec<_>>(),
+            vec![&5, &6, &7, &8, &9]
+        );
+        assert_eq!(
+            set.range(5..10).collect::<Vec<_>>(),
+            vec![&5, &6, &7, &8, &9]
+        );
 
-        assert_eq!(set.range(10..=19).collect::<Vec<_>>(), vec![&10, &11, &12, &13, &14, &15, &16, &17, &18, &19]);
-        assert_eq!(set.range(10..20).collect::<Vec<_>>(), vec![&10, &11, &12, &13, &14, &15, &16, &17, &18, &19]);
+        assert_eq!(
+            set.range(10..=19).collect::<Vec<_>>(),
+            vec![&10, &11, &12, &13, &14, &15, &16, &17, &18, &19]
+        );
+        assert_eq!(
+            set.range(10..20).collect::<Vec<_>>(),
+            vec![&10, &11, &12, &13, &14, &15, &16, &17, &18, &19]
+        );
 
         // Node intersection
         assert_eq!(set.range(3..=6).collect::<Vec<_>>(), vec![&3, &4, &5, &6]);
         assert_eq!(set.range(3..7).collect::<Vec<_>>(), vec![&3, &4, &5, &6]);
 
-        assert_eq!(set.range(8..=11).collect::<Vec<_>>(), vec![&8, &9, &10, &11]);
+        assert_eq!(
+            set.range(8..=11).collect::<Vec<_>>(),
+            vec![&8, &9, &10, &11]
+        );
         assert_eq!(set.range(8..12).collect::<Vec<_>>(), vec![&8, &9, &10, &11]);
 
         // REVERSED
@@ -1607,14 +1689,26 @@ mod tests {
         assert_eq!(set.range(10..11).rev().collect::<Vec<_>>(), vec![&10]);
 
         // From first value to middle
-        assert_eq!(set.range(0..=3).rev().collect::<Vec<_>>(), vec![&3, &2, &1, &0]);
+        assert_eq!(
+            set.range(0..=3).rev().collect::<Vec<_>>(),
+            vec![&3, &2, &1, &0]
+        );
         assert_eq!(set.range(0..3).rev().collect::<Vec<_>>(), vec![&2, &1, &0]);
 
-        assert_eq!(set.range(5..=8).rev().collect::<Vec<_>>(), vec![&8, &7, &6, &5]);
+        assert_eq!(
+            set.range(5..=8).rev().collect::<Vec<_>>(),
+            vec![&8, &7, &6, &5]
+        );
         assert_eq!(set.range(5..8).rev().collect::<Vec<_>>(), vec![&7, &6, &5]);
 
-        assert_eq!(set.range(10..=13).rev().collect::<Vec<_>>(), vec![&13, &12, &11, &10]);
-        assert_eq!(set.range(10..13).rev().collect::<Vec<_>>(), vec![&12, &11, &10]);
+        assert_eq!(
+            set.range(10..=13).rev().collect::<Vec<_>>(),
+            vec![&13, &12, &11, &10]
+        );
+        assert_eq!(
+            set.range(10..13).rev().collect::<Vec<_>>(),
+            vec![&12, &11, &10]
+        );
 
         // Last value of the node
         assert_eq!(set.range(4..=4).rev().collect::<Vec<_>>(), vec![&4]);
@@ -1627,8 +1721,14 @@ mod tests {
         assert_eq!(set.range(19..20).rev().collect::<Vec<_>>(), vec![&19]);
 
         // From middle to last value of the node
-        assert_eq!(set.range(17..=19).rev().collect::<Vec<_>>(), vec![&19, &18, &17]);
-        assert_eq!(set.range(17..20).rev().collect::<Vec<_>>(), vec![&19, &18, &17]);
+        assert_eq!(
+            set.range(17..=19).rev().collect::<Vec<_>>(),
+            vec![&19, &18, &17]
+        );
+        assert_eq!(
+            set.range(17..20).rev().collect::<Vec<_>>(),
+            vec![&19, &18, &17]
+        );
 
         assert_eq!(set.range(7..=9).rev().collect::<Vec<_>>(), vec![&9, &8, &7]);
         assert_eq!(set.range(7..10).rev().collect::<Vec<_>>(), vec![&9, &8, &7]);
@@ -1637,20 +1737,50 @@ mod tests {
         assert_eq!(set.range(2..5).rev().collect::<Vec<_>>(), vec![&4, &3, &2]);
 
         // Full node
-        assert_eq!(set.range(0..=4).rev().collect::<Vec<_>>(), vec![&4, &3, &2, &1, &0]);
-        assert_eq!(set.range(0..5).rev().collect::<Vec<_>>(), vec![&4, &3, &2, &1, &0]);
+        assert_eq!(
+            set.range(0..=4).rev().collect::<Vec<_>>(),
+            vec![&4, &3, &2, &1, &0]
+        );
+        assert_eq!(
+            set.range(0..5).rev().collect::<Vec<_>>(),
+            vec![&4, &3, &2, &1, &0]
+        );
 
-        assert_eq!(set.range(5..=9).rev().collect::<Vec<_>>(), vec![&9, &8, &7, &6, &5]);
-        assert_eq!(set.range(5..10).rev().collect::<Vec<_>>(), vec![&9, &8, &7, &6, &5]);
+        assert_eq!(
+            set.range(5..=9).rev().collect::<Vec<_>>(),
+            vec![&9, &8, &7, &6, &5]
+        );
+        assert_eq!(
+            set.range(5..10).rev().collect::<Vec<_>>(),
+            vec![&9, &8, &7, &6, &5]
+        );
 
-        assert_eq!(set.range(10..=19).rev().collect::<Vec<_>>(), vec![&19, &18, &17, &16, &15, &14, &13, &12, &11, &10]);
-        assert_eq!(set.range(10..20).rev().collect::<Vec<_>>(), vec![&19, &18, &17, &16, &15, &14, &13, &12, &11, &10]);
+        assert_eq!(
+            set.range(10..=19).rev().collect::<Vec<_>>(),
+            vec![&19, &18, &17, &16, &15, &14, &13, &12, &11, &10]
+        );
+        assert_eq!(
+            set.range(10..20).rev().collect::<Vec<_>>(),
+            vec![&19, &18, &17, &16, &15, &14, &13, &12, &11, &10]
+        );
 
         // Node intersection
-        assert_eq!(set.range(3..=6).rev().collect::<Vec<_>>(), vec![&6, &5, &4, &3]);
-        assert_eq!(set.range(3..7).rev().collect::<Vec<_>>(), vec![&6, &5, &4, &3]);
+        assert_eq!(
+            set.range(3..=6).rev().collect::<Vec<_>>(),
+            vec![&6, &5, &4, &3]
+        );
+        assert_eq!(
+            set.range(3..7).rev().collect::<Vec<_>>(),
+            vec![&6, &5, &4, &3]
+        );
 
-        assert_eq!(set.range(8..=11).rev().collect::<Vec<_>>(), vec![&11, &10, &9, &8]);
-        assert_eq!(set.range(8..12).rev().collect::<Vec<_>>(), vec![&11, &10, &9, &8]);
+        assert_eq!(
+            set.range(8..=11).rev().collect::<Vec<_>>(),
+            vec![&11, &10, &9, &8]
+        );
+        assert_eq!(
+            set.range(8..12).rev().collect::<Vec<_>>(),
+            vec![&11, &10, &9, &8]
+        );
     }
 }
