@@ -43,6 +43,7 @@ pub trait NodeLike<T: Ord> {
     fn iter<'a>(&'a self) -> std::slice::Iter<'a, T>
     where
         T: 'a;
+    fn drain(&mut self) -> Vec<T>;
 }
 
 #[inline]
@@ -243,6 +244,10 @@ impl<T: Ord> NodeLike<T> for Vec<T> {
         T: 'a,
     {
         self.deref().iter()
+    }
+    #[inline]
+    fn drain(&mut self) -> Vec<T> {
+        self.drain(..).collect()
     }
 }
 

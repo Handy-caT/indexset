@@ -443,7 +443,7 @@ where
                 let Some(max) = node_guard.max().cloned() else {
                     return None;
                 };
-                let (deleted, idx) = NodeLike::delete(&mut *node_guard, &max).expect(
+                let (deleted, _) = NodeLike::delete(&mut *node_guard, &max).expect(
                     "Max value should exist as it can't be removed while `node_guard` is alive",
                 );
                 let operation = if node_guard.len() > 0 {
@@ -1030,6 +1030,36 @@ where
         R: RangeBounds<Q>,
     {
         Range::new(self, range)
+    }
+    /// Removes all values from this [`BTreeSet`] and returns them collected in
+    /// [`Vec`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wt_indexset::concurrent::set::BTreeSet;
+    ///
+    /// let mut set = BTreeSet::<usize>::new();
+    /// set.insert(3);
+    /// set.insert(5);
+    /// set.insert(8);
+    /// let vals = set.drain();
+    /// assert_eq!(vals[0], 3);
+    /// assert_eq!(vals[1], 5);
+    /// assert_eq!(vals[2], 8);
+    /// assert_eq!(set.len(), 0);
+    /// ```
+    pub fn drain(&self) -> Vec<T> {
+        let mut drained_vals = vec![];
+        let _global_guard = self.index_lock.write();
+
+        for entry in self.index.iter() {
+            let mut node_guard = entry.value().lock_arc();
+            drained_vals.extend(node_guard.drain());
+            entry.remove();
+        }
+
+        drained_vals
     }
 }
 

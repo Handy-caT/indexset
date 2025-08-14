@@ -6,7 +6,6 @@ use parking_lot::Mutex;
 
 use crate::core::node::NodeLike;
 use crate::{cdc::change::ChangeEvent, core::multipair::MultiPair};
-
 use super::set::BTreeSet;
 
 #[derive(Debug)]
@@ -254,7 +253,7 @@ where
     {
         self.set.contains(key)
     }
-    fn _range<Q, R>(&self, range: R) -> Range<K, V, Node>
+    fn _range<Q, R>(&self, range: R) -> Range<'_, K, V, Node>
     where
         MultiPair<K, V>: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
@@ -266,7 +265,7 @@ where
             },
         }
     }
-    fn raw_get(&self, key: &K) -> RawRange<K, V, Node> {
+    fn raw_get(&self, key: &K) -> RawRange<'_, K, V, Node> {
         let infimum = MultiPair::with_infimum(key.clone());
         let supremum = MultiPair::with_supremum(key.clone());
 
@@ -290,7 +289,7 @@ where
     /// assert_eq!(all_with_key.len(), 2);
     /// assert_eq!(all_with_key, vec![(&1, &"a"), (&1, &"b")].into_iter().collect::<BTreeSet<_>>());
     /// ```
-    pub fn get(&self, key: &K) -> Range<K, V, Node> {
+    pub fn get(&self, key: &K) -> Range<'_, K, V, Node> {
         let infimum = MultiPair::with_infimum(key.clone());
         let supremum = MultiPair::with_supremum(key.clone());
 
@@ -543,7 +542,7 @@ where
     /// let (first_key, first_value) = map.iter().next().unwrap();
     /// assert_eq!((*first_key, *first_value), (1, "a"));
     /// ```
-    pub fn iter(&self) -> Iter<K, V, Node> {
+    pub fn iter(&self) -> Iter<'_, K, V, Node> {
         Iter {
             inner: self.set.iter(),
         }
@@ -577,7 +576,7 @@ where
     /// }
     /// assert_eq!(Some((&5, &"b")), map.range(4..).next());
     /// ```
-    pub fn range<R>(&self, range: R) -> Range<K, V, Node>
+    pub fn range<R>(&self, range: R) -> Range<'_, K, V, Node>
     where
         R: RangeBounds<K>,
     {
@@ -603,6 +602,27 @@ where
         };
 
         self._range((adjusted_start_bound, adjusted_end_bound))
+    }
+    /// Removes all values from this [`BTreeMap`] and returns them collected in
+    /// [`Vec`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wt_indexset::concurrent::multimap::BTreeMultiMap;
+    ///
+    /// let mut map = BTreeMultiMap::<usize, &str>::new();
+    /// map.insert(3, "a");
+    /// map.insert(5, "b");
+    /// map.insert(8, "c");
+    /// let vals = map.drain();
+    /// assert_eq!(vals[0].key, 3);
+    /// assert_eq!(vals[1].key, 5);
+    /// assert_eq!(vals[2].key, 8);
+    /// assert_eq!(map.len(), 0);
+    /// ```
+    pub fn drain(&self) -> Vec<MultiPair<K, V>> {
+        self.set.drain()
     }
 }
 

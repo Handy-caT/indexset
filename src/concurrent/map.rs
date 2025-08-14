@@ -420,7 +420,7 @@ where
     /// let (first_key, first_value) = map.iter().next().unwrap();
     /// assert_eq!((*first_key, *first_value), (1, "a"));
     /// ```
-    pub fn iter(&self) -> Iter<K, V, Node> {
+    pub fn iter(&self) -> Iter<'_, K, V, Node> {
         Iter {
             inner: self.set.iter(),
         }
@@ -454,7 +454,7 @@ where
     /// }
     /// assert_eq!(Some((&5, &"b")), map.range(4..).next());
     /// ```
-    pub fn range<Q, R>(&self, range: R) -> Range<K, V, Node>
+    pub fn range<Q, R>(&self, range: R) -> Range<'_, K, V, Node>
     where
         Pair<K, V>: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -463,6 +463,27 @@ where
         Range {
             inner: BTreeSet::range(&self.set, range),
         }
+    }
+    /// Removes all values from this [`BTreeMap`] and returns them collected in
+    /// [`Vec`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wt_indexset::concurrent::map::BTreeMap;
+    ///
+    /// let mut map = BTreeMap::<i32, &str>::new();
+    /// map.insert(3, "a");
+    /// map.insert(5, "b");
+    /// map.insert(8, "c");
+    /// let vals = map.drain();
+    /// assert_eq!(vals[0].key, 3);
+    /// assert_eq!(vals[1].key, 5);
+    /// assert_eq!(vals[2].key, 8);
+    /// assert_eq!(map.len(), 0);
+    /// ```
+    pub fn drain(&self) -> Vec<Pair<K, V>> {
+        self.set.drain()
     }
 }
 
