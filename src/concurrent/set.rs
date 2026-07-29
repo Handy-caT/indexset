@@ -1801,7 +1801,7 @@ mod tests {
         }
 
         let set_clone = Arc::clone(&set);
-        let _ = thread::spawn(move || {
+        let handle = thread::spawn(move || {
             for _ in 0..1000 {
                 let mut _sum = 0;
                 for &value in set_clone.iter() {
@@ -1813,5 +1813,6 @@ mod tests {
         for i in 10_000..20_000 {
             set.insert(i);
         }
+        handle.join().unwrap();
     }
 }
